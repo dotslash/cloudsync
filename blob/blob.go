@@ -47,8 +47,6 @@ type GcpBackend struct {
 
 func (g GcpBackend) Init(bucket string, basePrefix string) *GcpBackend {
 	var err error
-	// 1+1
-	// 2+2
 	g.client, err = gcs.NewClient(
 		context.TODO(), option.WithCredentialsFile(os.Getenv("GOOGLE_APPLICATION_CREDENTIALS")))
 	if err != nil {
