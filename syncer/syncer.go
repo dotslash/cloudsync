@@ -95,7 +95,7 @@ func (s *syncer) Start() {
 		if err != nil {
 			log.Printf("syncCore failed. err=%v", err)
 		}
-		time.Sleep(2 * time.Second)
+		time.Sleep(30 * time.Second)
 	}
 }
 
@@ -240,6 +240,8 @@ func (s *syncer) diffFromLastRun(newRun *ScanResult) diffFromLastRunRes {
 }
 
 func (s *syncer) syncCore() error {
+	log.Printf("==================================")
+	log.Printf("==================================")
 	remoteFiles, err := s.backend.ListDirRecursive("")
 	if err != nil {
 		return err
@@ -254,9 +256,7 @@ func (s *syncer) syncCore() error {
 	actions := s.getActions(&scanRes)
 	log.Printf("s.getActions done. numActions %v", len(actions))
 	err = s.applyChanges(actions)
-	log.Printf("s.applyChanges done. numActions %v", len(actions))
-	log.Printf("==================================")
-	log.Printf("==================================")
+	// log.Printf("s.applyChanges done. numActions %v", len(actions))
 	s.lastScan = scanRes
 	return err
 }
