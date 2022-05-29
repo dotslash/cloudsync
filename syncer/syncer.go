@@ -95,7 +95,7 @@ func (s *syncer) Start() {
 		if err != nil {
 			log.Printf("syncCore failed. err=%v", err)
 		}
-		time.Sleep(30 * time.Second)
+		time.Sleep(2 * time.Second)
 	}
 }
 
@@ -131,6 +131,7 @@ func (s *syncer) getActions(newRun *ScanResult) []action {
 					localBasePath: s.localBasePath,
 					relativePath:  fn,
 					backend:       s.backend,
+					blobInfo:      diffEntry.remoteDiff,
 				})
 			} else {
 				// no changes on remote => remove on remote
@@ -154,12 +155,22 @@ func (s *syncer) getActions(newRun *ScanResult) []action {
 					backend:       s.backend,
 				})
 			} else {
-				// remote timestamp higher => write to local
-				ret = append(ret, &localWrite{
-					localBasePath: s.localBasePath,
-					relativePath:  fn,
-					backend:       s.backend,
-				})
+				isRemoteUpdatedRecently := diffEntry.remoteDiff.ModTime.Before(time.Now().Add(-1 * time.Minute))
+				if isRemoteUpdatedRecently {
+					// Download from remote only if remote's timestamp is 1min higher than local. This is to avoid
+					// concurrency issues where data is modified locally actively.
+					log.Printf("Remote updated less than 1min ago. Will skip the download this time. %v %v",
+						fn,
+						diffEntry.remoteDiff.ModTime)
+				} else {
+					// remote timestamp higher => write to local
+					ret = append(ret, &localWrite{
+						localBasePath: s.localBasePath,
+						relativePath:  fn,
+						backend:       s.backend,
+						blobInfo:      diffEntry.remoteDiff,
+					})
+				}
 			}
 		} else if diffEntry.localChanged {
 			// local change only => update to remote
@@ -174,6 +185,7 @@ func (s *syncer) getActions(newRun *ScanResult) []action {
 				localBasePath: s.localBasePath,
 				relativePath:  fn,
 				backend:       s.backend,
+				blobInfo:      diffEntry.remoteDiff,
 			})
 		} else {
 			log.Printf("getActions: This should not happen %v %#v", fn, diffEntry)
@@ -252,6 +264,7 @@ func (s *syncer) syncCore() error {
 func (s *syncer) applyChanges(actions []action) error {
 	for _, a := range actions {
 		if err := a.do(); err != nil {
+			// TODO: Dont fail the entire thing if one operation fails.
 			return fmt.Errorf("failure in %v", a)
 		}
 	}

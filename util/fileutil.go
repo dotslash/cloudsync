@@ -7,6 +7,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path"
 	"strings"
 	"time"
 )
@@ -19,6 +20,16 @@ type LocalFileMeta struct {
 	Md5sum  string // hex string of md5 hash
 }
 
+func GetLocalFileMeta(basePath, relPath string) (*LocalFileMeta, error) {
+	fullpath := path.Join(basePath, relPath)
+	if info, err := os.Stat(fullpath); err != nil {
+		return nil, err
+	} else {
+		return makeLocalFileMeta(basePath, fullpath, info)
+	}
+}
+
+// TODO: this method takes basePath and fullPath. This is bazzare. Fix it.
 func makeLocalFileMeta(basePath, path string, info fs.FileInfo) (*LocalFileMeta, error) {
 	PanicIf(
 		strings.HasSuffix(basePath, "/"),

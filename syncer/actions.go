@@ -48,6 +48,7 @@ type blobWrite struct {
 	backend       blob.Backend
 }
 
+// TODO: Dont do the write if the target file exists already and has a higher timestamp
 func (bw *blobWrite) do() error {
 	localFullPath := path.Join(bw.localBasePath, bw.relativePath)
 	log.Printf("Writing from %v to remote:%v", localFullPath, bw.relativePath)
@@ -68,20 +69,31 @@ type localWrite struct {
 	localBasePath string
 	relativePath  string
 	backend       blob.Backend
+	blobInfo      *blob.MetaEntry
 }
 
+// TODO: Dont do the write if the target file exists already and has a higher timestamp
 func (lw *localWrite) do() error {
 	localFullPath := path.Join(lw.localBasePath, lw.relativePath)
-	log.Printf("Writing from remote:%v to %v", lw.relativePath, localFullPath)
-	if err := os.MkdirAll(path.Dir(localFullPath), 0755); err != nil {
-		return fmt.Errorf("localToWrite: MkdirAll(%v) failed - %e", path.Dir(localFullPath), err)
-	}
-	if file, err := os.OpenFile(localFullPath, os.O_CREATE|os.O_RDWR, 0755); err != nil {
-		return fmt.Errorf("localToWrite: OpenFile(%v) failed - %e", localFullPath, err)
+	ctxString := fmt.Sprintf("localWrite(%v)", lw.relativePath)
+	log.Printf("[%v] Starting remote:%v to %v", ctxString, lw.relativePath, localFullPath)
+	// TODO: maybe handle error. Here i only care about the case where info is ready
+	info, err := util.GetLocalFileMeta(lw.localBasePath, lw.relativePath)
+	if err == nil && info.Md5sum == lw.blobInfo.Md5 {
+		// test
+		log.Printf("[%v] Local file's md5 sum is same. Skipping the localWrite", ctxString)
+		return nil
+	} else if err == nil && info.ModTime.After(lw.blobInfo.ModTime) {
+		log.Printf("[%v] Local file is modified after remote. Skipping the localWrite", ctxString)
+		return nil
+	} else if err := os.MkdirAll(path.Dir(localFullPath), 0755); err != nil {
+		return fmt.Errorf("[%v] MkdirAll(%v) failed - %e", ctxString, path.Dir(localFullPath), err)
+	} else if file, err := os.OpenFile(localFullPath, os.O_CREATE|os.O_RDWR, 0755); err != nil {
+		return fmt.Errorf("[%v] OpenFile(%v) failed - %e", ctxString, localFullPath, err)
 	} else if blobEntry, err := lw.backend.Get(lw.relativePath); err != nil {
-		return fmt.Errorf("localToWrite: backend.Get(%v) failed - %e", lw.relativePath, err)
+		return fmt.Errorf("[%v] backend.Get(%v) failed - %e", ctxString, lw.relativePath, err)
 	} else if err = util.CopyAndClose(file, blobEntry.Content); err != nil {
-		return fmt.Errorf("localToWrite: CopyAndClose(%v) failed - %e", lw.relativePath, err)
+		return fmt.Errorf("[%v] CopyAndClose(%v) failed - %e", ctxString, lw.relativePath, err)
 	}
 	return nil
 }
