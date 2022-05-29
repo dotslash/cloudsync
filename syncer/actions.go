@@ -15,70 +15,76 @@ type action interface {
 
 type localRemove struct {
 	basePath         string
-	relativeFilePath string
+	relativeFilePath util.RelPathType
 }
 
 func (lr *localRemove) do() error {
-	fullPath := path.Join(lr.basePath, lr.relativeFilePath)
-	log.Printf("localRemove: Removing %v full:%v", lr.relativeFilePath, fullPath)
+	fullPath := path.Join(lr.basePath, lr.relativeFilePath.String())
+	log.Printf("localRemove(%v): full path:%v", lr.relativeFilePath, fullPath)
 	return os.Remove(fullPath)
 }
 
 func (lr *localRemove) String() string {
-	return fmt.Sprintf("localRemove:%v", lr.relativeFilePath)
+	return fmt.Sprintf("localRemove(%v)", lr.relativeFilePath)
 }
 
 type blobRemove struct {
-	relativeFilePath string
+	relativeFilePath util.RelPathType
 	backend          blob.Backend
 }
 
 func (s *blobRemove) do() error {
-	log.Printf("blobRemove: Removing %v", s.relativeFilePath)
+	log.Printf("blobRemove(%v): Removing %v", s.relativeFilePath, s.relativeFilePath)
 	return s.backend.Delete(s.relativeFilePath)
 }
 
 func (br *blobRemove) String() string {
-	return fmt.Sprintf("blobRemove:%v", br.relativeFilePath)
+	return fmt.Sprintf("blobRemove(%v)", br.relativeFilePath)
 }
 
 type blobWrite struct {
 	localBasePath string
-	relativePath  string
+	relativePath  util.RelPathType
 	backend       blob.Backend
+	localMeta     *util.LocalFileMeta
+	remoteMeta    *blob.MetaEntry
 }
 
-// TODO: Dont do the write if the target file exists already and has a higher timestamp
 func (bw *blobWrite) do() error {
-	localFullPath := path.Join(bw.localBasePath, bw.relativePath)
-	log.Printf("Writing from %v to remote:%v", localFullPath, bw.relativePath)
+	ctxString := fmt.Sprintf("blobWrite(%v)", bw.relativePath)
+	if bw.remoteMeta != nil && bw.localMeta != nil && bw.remoteMeta.Md5 == bw.localMeta.Md5sum {
+		log.Printf("[%v] Skipping because md5 hashes already match", ctxString)
+		return nil
+	}
+	localFullPath := path.Join(bw.localBasePath, bw.relativePath.String())
+	log.Printf("[%v] Writing from %v to remote:%v", ctxString, localFullPath, bw.relativePath)
 	file, err := os.Open(localFullPath)
 	if err != nil {
-		return fmt.Errorf("remoteToWrite: Open(%v %v) failed - %e", localFullPath, bw.relativePath, err)
+		return fmt.Errorf("[%v] remoteToWrite: Open(%v %v) failed - %e", ctxString, localFullPath, bw.relativePath, err)
 	}
 	if err = bw.backend.Put(bw.relativePath, file); err != nil {
-		return fmt.Errorf("remoteToWrite: Put(%v) failed - %e", bw.relativePath, err)
+		return fmt.Errorf("[%v] remoteToWrite: Put(%v) failed - %e", ctxString, bw.relativePath, err)
 	}
 	return nil
 }
 func (bw *blobWrite) String() string {
-	return fmt.Sprintf("blobWrite:%v", bw.relativePath)
+	return fmt.Sprintf("blobWrite(%v)", bw.relativePath)
 }
 
 type localWrite struct {
 	localBasePath string
-	relativePath  string
+	relativePath  util.RelPathType
 	backend       blob.Backend
 	blobInfo      *blob.MetaEntry
 }
 
 // TODO: Dont do the write if the target file exists already and has a higher timestamp
 func (lw *localWrite) do() error {
-	localFullPath := path.Join(lw.localBasePath, lw.relativePath)
+	localFullPath := path.Join(lw.localBasePath, lw.relativePath.String())
 	ctxString := fmt.Sprintf("localWrite(%v)", lw.relativePath)
 	log.Printf("[%v] Starting remote:%v to %v", ctxString, lw.relativePath, localFullPath)
 	// TODO: maybe handle error. Here i only care about the case where info is ready
-	info, err := util.GetLocalFileMeta(lw.localBasePath, lw.relativePath)
+	info, err := util.GetLocalFileMeta(lw.localBasePath, lw.relativePath.String())
 	if err == nil && info.Md5sum == lw.blobInfo.Md5 {
 		// test
 		log.Printf("[%v] Local file's md5 sum is same. Skipping the localWrite", ctxString)
@@ -99,5 +105,5 @@ func (lw *localWrite) do() error {
 }
 
 func (lw *localWrite) String() string {
-	return fmt.Sprintf("localWrite:%v", lw.relativePath)
+	return fmt.Sprintf("localWrite(%v)", lw.relativePath)
 }
