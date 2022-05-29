@@ -3,15 +3,14 @@ package main
 import (
 	"flag"
 	"github.com/dotslash/cloudsync/blob"
+	"github.com/dotslash/cloudsync/syncer"
 	"log"
 	"net/url"
 )
 
 func main() {
 	localPath := flag.String("local", ".", "Local Path")
-	//initialTruth := flag.String("initial_truth", "local",
-	//	"Initial source of truth. When the program starts if local and "+
-	//		"remote disagree initial_truth will will")
+	localTrash := flag.String("local_trash", "./.trash", "Local Trash")
 	remotePath := flag.String("remote", "",
 		"Local Path (currently only gcp is supported)",
 	)
@@ -24,7 +23,6 @@ func main() {
 	}
 	remote, _ := url.Parse(*remotePath)
 	blobStore := blob.NewBackend(*remote, *remoteTrash)
-	// localDataIsInitialTruth := *initialTruth == "local"
-	syncer := newSyncer(*localPath, blobStore)
-	syncer.start()
+	syncerObj := syncer.NewSyncer(*localPath, *localTrash, blobStore)
+	syncerObj.Start()
 }

@@ -10,6 +10,7 @@ import (
 	"io"
 	"log"
 	"net/url"
+	"os"
 	"path"
 	"strings"
 	"time"
@@ -32,6 +33,7 @@ type FullEntry struct {
 type Backend interface {
 	ListDirRecursive(prefix string) ([]MetaEntry, error)
 	GetMeta(name string) (*MetaEntry, error)
+	Delete(name string) error
 	Get(name string) (*FullEntry, error)
 	// Reader will be closed by Put
 	Put(name string, reader io.ReadCloser) error
@@ -45,10 +47,10 @@ type GcpBackend struct {
 
 func (g GcpBackend) Init(bucket string, basePrefix string) *GcpBackend {
 	var err error
-	creds := option.WithCredentialsFile(
-		"/Users/sai.suram/setup/.booming-gcs-65bee19385fa76fbafbef87fc2d260d9150e3c52.json",
-	)
-	g.client, err = gcs.NewClient(context.TODO(), creds)
+	// 1+1
+	// 2+2
+	g.client, err = gcs.NewClient(
+		context.TODO(), option.WithCredentialsFile(os.Getenv("GOOGLE_APPLICATION_CREDENTIALS")))
 	if err != nil {
 		panic(fmt.Sprintf("Failed to create client %v", err))
 	}
@@ -87,6 +89,10 @@ func (g *GcpBackend) ListDirRecursive(prefix string) ([]MetaEntry, error) {
 		})
 	}
 	return ret, nil
+}
+
+func (g *GcpBackend) Delete(name string) error {
+	return g.bucket.Object(path.Join(g.basePrefix, name)).Delete(context.TODO())
 }
 
 func (g *GcpBackend) GetMeta(name string) (*MetaEntry, error) {
