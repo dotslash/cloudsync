@@ -87,5 +87,5 @@ func (lw *localWrite) do() error {
 }
 
 func (lw *localWrite) String() string {
-	return fmt.Sprintf("blobWrite:%v", lw.relativePath)
+	return fmt.Sprintf("localWrite:%v", lw.relativePath)
 }
