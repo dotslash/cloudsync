@@ -1,7 +1,7 @@
 2 way sync between Google Cloud Storage (the s3 equivalent for GCP) and a local machine. There are probably other tools
 that do similar things. Im doing it for fun.
 
-### Current state
+### Current state of things and what's next
 
 This is a loop forever that step1) 2 syncs data from local machine and gcs. step2) sleep 30 secs. This works more or
 less, except that there are atleast a few things to improve
