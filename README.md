@@ -22,6 +22,5 @@ less, except that there are atleast a few things to improve
   the overwrite public too
 * Should we do blobstore operations in parallel?
 * Should we do local file operations in parallel?
-* [bug] If file is added locally and removed after a short while, it might added back
 
 There might be more things to do.

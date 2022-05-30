@@ -17,11 +17,14 @@ import (
 )
 import gcs "cloud.google.com/go/storage"
 
+const writerClientIdKey = "WriterClientId"
+
 type MetaEntry struct {
-	BasePath string
-	RelPath  util.RelPathType
-	Md5      string // hex string of md5
-	ModTime  time.Time
+	BasePath           string
+	RelPath            util.RelPathType
+	Md5                string // hex string of md5
+	ModTime            time.Time
+	BlobWriterClientId *string
 }
 
 type FullEntry struct {
@@ -43,6 +46,7 @@ type GcpBackend struct {
 	client     *gcs.Client
 	bucket     *gcs.BucketHandle
 	basePrefix string
+	clientId   string
 }
 
 func (g GcpBackend) Init(bucket string, basePrefix string) *GcpBackend {
@@ -54,6 +58,7 @@ func (g GcpBackend) Init(bucket string, basePrefix string) *GcpBackend {
 	}
 	g.bucket = g.client.Bucket(bucket)
 	g.basePrefix = strings.Trim(basePrefix, "/")
+	g.clientId = util.UniqueMachineId
 	fmt.Println(g.bucket, "--", g.basePrefix)
 	return &g
 }
@@ -85,6 +90,11 @@ func (g *GcpBackend) ListDirRecursive(prefix string) (map[util.RelPathType]MetaE
 			Md5:      hex.EncodeToString(next.MD5),
 			ModTime:  next.Updated,
 		}
+		writerClientId, ok := next.Metadata[writerClientIdKey]
+		if ok {
+			entry.BlobWriterClientId = &writerClientId
+		}
+
 		ret[entry.RelPath] = entry
 	}
 	return ret, nil
@@ -99,12 +109,17 @@ func (g *GcpBackend) GetMeta(name util.RelPathType) (*MetaEntry, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &MetaEntry{
+	ret := &MetaEntry{
 		BasePath: g.basePrefix,
 		RelPath:  name,
 		Md5:      hex.EncodeToString(attrs.MD5),
 		ModTime:  attrs.Updated,
-	}, nil
+	}
+	writerClientId, ok := attrs.Metadata[writerClientIdKey]
+	if ok {
+		ret.BlobWriterClientId = &writerClientId
+	}
+	return ret, nil
 }
 
 func (g *GcpBackend) Get(name util.RelPathType) (*FullEntry, error) {
@@ -130,6 +145,10 @@ func (g *GcpBackend) Put(name util.RelPathType, reader io.ReadCloser) error {
 	o := g.bucket.Object(path.Join(g.basePrefix, name.String()))
 	log.Printf("Writing to %v:%v", o.BucketName(), o.ObjectName())
 	w := o.NewWriter(context.TODO())
+	if w.ObjectAttrs.Metadata == nil {
+		w.ObjectAttrs.Metadata = make(map[string]string)
+	}
+	w.ObjectAttrs.Metadata[writerClientIdKey] = g.clientId
 	return util.CopyAndClose(w, reader)
 }
 

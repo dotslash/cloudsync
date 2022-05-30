@@ -28,6 +28,10 @@ func main() {
 		debugBlob(os.Args[2:])
 	} else if os.Args[1] == "file" {
 		debugFile(os.Args[1:])
+	} else {
+		id, err := util.GetUniqueMachineId()
+		fmt.Println("Error: ", err)
+		fmt.Println("uniqueId", id)
 	}
 }
 

@@ -128,15 +128,26 @@ func (s *syncer) getActions(newRun *ScanResult) []action {
 				})
 			}
 		} else if diffEntry.localChange == changeTypeRem { // removed from local
-			if diffEntry.remoteChange == changeTypeUpdated {
-				// locally file is removed. But it updated on remote recently.
-				// lets play safe and add it back to local
-				ret = append(ret, &localWrite{
-					localBasePath: s.localBasePath,
-					relativePath:  fn,
-					backend:       s.backend,
-					blobInfo:      diffEntry.remote,
-				})
+			if diffEntry.remoteChange == changeTypeUpdated { // update on blobstore
+				blobWriterClientId := diffEntry.remote.BlobWriterClientId
+				if blobWriterClientId != nil && *blobWriterClientId == util.UniqueMachineId {
+					// 1. Source of the blob is the current machine
+					// 2. Blob is not on the machine
+					// => blob was removed from the machine after it was uploaded => So we need to remove the blob
+					ret = append(ret, &blobRemove{
+						relativeFilePath: fn,
+						backend:          s.backend,
+					})
+				} else {
+					// locally file is removed. But it updated on remote recently.
+					// lets play safe and add it back to local
+					ret = append(ret, &localWrite{
+						localBasePath: s.localBasePath,
+						relativePath:  fn,
+						backend:       s.backend,
+						blobInfo:      diffEntry.remote,
+					})
+				}
 			} else if diffEntry.remote != nil {
 				// no changes on remote => remove on remote
 				ret = append(ret, &blobRemove{
