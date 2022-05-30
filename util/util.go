@@ -2,6 +2,12 @@ package util
 
 import "fmt"
 
+type RelPathType string
+
+func (p RelPathType) String() string {
+	return string(p)
+}
+
 func PanicIf(cond bool, msg string) {
 	if cond {
 		panic(msg)

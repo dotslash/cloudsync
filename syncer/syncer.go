@@ -16,17 +16,23 @@ type ScanResult struct {
 	scanTime time.Time
 }
 
+// TODO: Remove??
+func (s *ScanResult) isDefault() bool {
+	return s.scanTime == time.Time{}
+}
+
 type syncer struct {
 	localBasePath string
 	backend       blob.Backend
 	lastScan      ScanResult
 }
+
 type changeType string
 
 const (
-	changeTypeUpdated = changeType("update")
-	changeTypeRem     = changeType("rem")
-	changeTypeNone    = changeType("none")
+	changeTypeUpdated changeType = "update"
+	changeTypeRem     changeType = "rem"
+	changeTypeNone    changeType = "none"
 )
 
 type diffFileEntry struct {
@@ -45,7 +51,14 @@ type diffFileEntry struct {
 }
 
 func (de diffFileEntry) String() string {
-	return fmt.Sprintf("local:%v remote:%v", de.localChange, de.remoteChange)
+	localMd5, remoteMd5 := "na", "na"
+	if de.local != nil {
+		localMd5 = de.local.Md5sum
+	}
+	if de.remote != nil {
+		remoteMd5 = de.remote.Md5
+	}
+	return fmt.Sprintf("local:%v@%v remote:%v@%v", de.localChange, localMd5, de.remoteChange, remoteMd5)
 }
 
 type diffFromLastRunRes map[util.RelPathType]*diffFileEntry
@@ -94,6 +107,7 @@ func (s *syncer) getActions(newRun *ScanResult) []action {
 	ret := make([]action, 0)
 	for fn, diffEntry := range diff {
 		log.Printf("diffEntry - %v %v", fn, diffEntry.String())
+		bothMetasPresent := diffEntry.local != nil && diffEntry.remote != nil
 		if diffEntry.localChange == changeTypeRem && diffEntry.remoteChange == changeTypeRem {
 			// Removed from both remote and local.
 			continue
@@ -106,7 +120,7 @@ func (s *syncer) getActions(newRun *ScanResult) []action {
 					relativePath:  fn,
 					backend:       s.backend,
 				})
-			} else {
+			} else if diffEntry.local != nil {
 				// no change on local => remove on local
 				ret = append(ret, &localRemove{
 					basePath:         s.localBasePath,
@@ -123,17 +137,33 @@ func (s *syncer) getActions(newRun *ScanResult) []action {
 					backend:       s.backend,
 					blobInfo:      diffEntry.remote,
 				})
-			} else {
+			} else if diffEntry.remote != nil {
 				// no changes on remote => remove on remote
 				ret = append(ret, &blobRemove{
 					relativeFilePath: fn,
 					backend:          s.backend,
 				})
 			}
-		} else if diffEntry.localChange == changeTypeUpdated || diffEntry.remoteChange == changeTypeUpdated { // change on both remote and local
-			//log.Printf("diffEntry(local, remote): %#v %#v",
-			//	*diffEntry.localDiff,
-			//	*diffEntry.remoteDiff)
+		} else if !bothMetasPresent {
+			// This will happen if the file is present only on one side => (typically file add)
+			if diffEntry.local != nil {
+				ret = append(ret, &blobWrite{
+					localBasePath: s.localBasePath,
+					relativePath:  fn,
+					backend:       s.backend,
+					localMeta:     diffEntry.local,
+					remoteMeta:    diffEntry.remote,
+				})
+			} else {
+				ret = append(ret, &localWrite{
+					localBasePath: s.localBasePath,
+					relativePath:  fn,
+					backend:       s.backend,
+					blobInfo:      diffEntry.remote,
+				})
+			}
+		} else if diffEntry.localChange == changeTypeUpdated || diffEntry.remoteChange == changeTypeUpdated {
+			// change on both remote and local and both metadata entries present
 			if diffEntry.local.Md5sum == diffEntry.remote.Md5 {
 				// file changed. But same md5 in both places.
 				continue
@@ -147,25 +177,16 @@ func (s *syncer) getActions(newRun *ScanResult) []action {
 					remoteMeta:    diffEntry.remote,
 				})
 			} else {
-				isRemoteUpdatedRecently := diffEntry.remote.ModTime.Before(time.Now().Add(-1 * time.Minute))
-				if isRemoteUpdatedRecently {
-					// Download from remote only if remote's timestamp is 1min higher than local. This is to avoid
-					// concurrency issues where data is modified locally actively.
-					log.Printf("Remote updated less than 1min ago. Will skip the download this time. %v %v",
-						fn,
-						diffEntry.remote.ModTime)
-				} else {
-					// remote timestamp higher => write to local
-					ret = append(ret, &localWrite{
-						localBasePath: s.localBasePath,
-						relativePath:  fn,
-						backend:       s.backend,
-						blobInfo:      diffEntry.remote,
-					})
-				}
+				// remote timestamp higher => write to local
+				ret = append(ret, &localWrite{
+					localBasePath: s.localBasePath,
+					relativePath:  fn,
+					backend:       s.backend,
+					blobInfo:      diffEntry.remote,
+				})
 			}
 		} else {
-			log.Printf("getActions: This should not happen %v %#v", fn, diffEntry)
+			log.Printf("getActions: This should not happen %v %v", fn, diffEntry.String())
 		}
 	}
 	return ret
@@ -175,7 +196,9 @@ func (s *syncer) diffFromLastRun(newRun *ScanResult) diffFromLastRunRes {
 	ret := make(diffFromLastRunRes)
 	newLocalFiles := make(map[util.RelPathType]util.LocalFileMeta)
 	for _, _lm := range newRun.local {
+		localMeta := _lm
 		newLocalFiles[_lm.RelPath] = _lm
+		ret.setLocalDiff(localMeta.RelPath, &localMeta, changeTypeNone)
 	}
 	for _, _oldFile := range s.lastScan.local {
 		newFile, ok := newLocalFiles[_oldFile.RelPath]
@@ -195,7 +218,9 @@ func (s *syncer) diffFromLastRun(newRun *ScanResult) diffFromLastRunRes {
 
 	newFilesRemote := make(map[util.RelPathType]blob.MetaEntry)
 	for _, _remoteFile := range newRun.remote {
+		remoteFile := _remoteFile
 		newFilesRemote[_remoteFile.RelPath] = _remoteFile
+		ret.setRemoteDiff(_remoteFile.RelPath, &remoteFile, changeTypeNone)
 	}
 	for _, _oldRemoteFile := range s.lastScan.remote {
 		newRemoteFile, ok := newFilesRemote[_oldRemoteFile.RelPath]
@@ -213,12 +238,25 @@ func (s *syncer) diffFromLastRun(newRun *ScanResult) diffFromLastRunRes {
 		ret.setRemoteDiff(_newRemoteFile.RelPath, &newRemoteFile, changeTypeUpdated)
 	}
 
+	for rp, entry := range ret {
+		if entry.localChange == changeTypeNone && entry.remoteChange == changeTypeNone {
+			delete(ret, rp)
+		}
+	}
+
 	return ret
 }
 
 func (s *syncer) syncCore() error {
-	log.Printf("==================================")
-	log.Printf("==================================")
+	var err error
+	log.Printf("syncCore.start->==================================")
+	defer func() {
+		if err != nil {
+			log.Printf("syncCore.done(err)->==================================")
+		} else {
+			log.Printf("syncCore.done(ok)->==================================")
+		}
+	}()
 	remoteFiles, err := s.backend.ListDirRecursive("")
 	if err != nil {
 		return err
@@ -233,7 +271,7 @@ func (s *syncer) syncCore() error {
 	actions := s.getActions(&scanRes)
 	log.Printf("s.getActions done. numActions %v", len(actions))
 	err = s.applyChanges(actions)
-	// log.Printf("s.applyChanges done. numActions %v", len(actions))
+	log.Printf("s.applyChanges done. numActions %v", len(actions))
 	s.lastScan = scanRes
 	return err
 }

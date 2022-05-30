@@ -18,5 +18,10 @@ less, except that there are atleast a few things to improve
 * Support trash
 * Support recovering from an earlier state. Is it possible to give a simple experience? - Something like "give me state
   of things as of <time> from the cloud". Maybe that's too much.
+* Should we preserve blob attributes when overwriting content. E.g if the blob is public before, maybe we should make
+  the overwrite public too
+* Should we do blobstore operations in parallel?
+* Should we do local file operations in parallel?
+* [bug] If file is added locally and removed after a short while, it might added back
 
 There might be more things to do.

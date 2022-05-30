@@ -26,7 +26,7 @@ func debugBlob(args []string) {
 func main() {
 	if os.Args[1] == "blob" {
 		debugBlob(os.Args[2:])
-	} else {
+	} else if os.Args[1] == "file" {
 		debugFile(os.Args[1:])
 	}
 }

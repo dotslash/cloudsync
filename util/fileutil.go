@@ -15,7 +15,7 @@ import "path/filepath"
 
 type LocalFileMeta struct {
 	BaseDir string
-	RelPath string
+	RelPath RelPathType
 	ModTime time.Time
 	Md5sum  string // hex string of md5 hash
 }
@@ -48,18 +48,18 @@ func makeLocalFileMeta(basePath, path string, info fs.FileInfo) (*LocalFileMeta,
 	}
 	return &LocalFileMeta{
 		BaseDir: basePath,
-		RelPath: strings.TrimPrefix(path, basePath+"/"),
+		RelPath: RelPathType(strings.TrimPrefix(path, basePath+"/")),
 		ModTime: info.ModTime(),
 		Md5sum:  hex.EncodeToString(hasher.Sum(nil)),
 	}, nil
 }
 
-func ListFilesRec(basePath string) (ret []LocalFileMeta, err error) {
+func ListFilesRec(basePath string) (ret map[RelPathType]LocalFileMeta, err error) {
 	PanicIfFalse(
 		strings.HasPrefix(basePath, "/") && !strings.HasSuffix(basePath, "/"),
 		fmt.Sprintf("Base path must begin with / and must not end with /: %v", basePath),
 	)
-
+	ret = make(map[RelPathType]LocalFileMeta)
 	err = filepath.WalkDir(basePath, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -71,7 +71,7 @@ func ListFilesRec(basePath string) (ret []LocalFileMeta, err error) {
 		} else if meta, err := makeLocalFileMeta(basePath, path, info); err != nil {
 			return err
 		} else {
-			ret = append(ret, *meta)
+			ret[meta.RelPath] = *meta
 			return nil
 		}
 	})

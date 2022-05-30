@@ -19,7 +19,7 @@ import gcs "cloud.google.com/go/storage"
 
 type MetaEntry struct {
 	BasePath string
-	RelPath  string
+	RelPath  util.RelPathType
 	Md5      string // hex string of md5
 	ModTime  time.Time
 }
@@ -31,12 +31,12 @@ type FullEntry struct {
 }
 
 type Backend interface {
-	ListDirRecursive(prefix string) ([]MetaEntry, error)
-	GetMeta(name string) (*MetaEntry, error)
-	Delete(name string) error
-	Get(name string) (*FullEntry, error)
+	ListDirRecursive(prefix string) (map[util.RelPathType]MetaEntry, error)
+	GetMeta(name util.RelPathType) (*MetaEntry, error)
+	Delete(name util.RelPathType) error
+	Get(name util.RelPathType) (*FullEntry, error)
 	// Reader will be closed by Put
-	Put(name string, reader io.ReadCloser) error
+	Put(name util.RelPathType, reader io.ReadCloser) error
 }
 
 type GcpBackend struct {
@@ -58,7 +58,7 @@ func (g GcpBackend) Init(bucket string, basePrefix string) *GcpBackend {
 	return &g
 }
 
-func (g *GcpBackend) ListDirRecursive(prefix string) ([]MetaEntry, error) {
+func (g *GcpBackend) ListDirRecursive(prefix string) (map[util.RelPathType]MetaEntry, error) {
 	basePath := g.basePrefix + prefix
 	if !strings.HasSuffix(basePath, "/") {
 		basePath = basePath + "/"
@@ -71,7 +71,7 @@ func (g *GcpBackend) ListDirRecursive(prefix string) ([]MetaEntry, error) {
 		Versions:   false,
 		Projection: gcs.ProjectionFull,
 	})
-	ret := make([]MetaEntry, 0)
+	ret := make(map[util.RelPathType]MetaEntry)
 	for {
 		next, err := it.Next()
 		if err == iterator.Done {
@@ -79,22 +79,23 @@ func (g *GcpBackend) ListDirRecursive(prefix string) ([]MetaEntry, error) {
 		} else if err != nil {
 			return nil, err
 		}
-		ret = append(ret, MetaEntry{
+		entry := MetaEntry{
 			BasePath: basePath,
-			RelPath:  strings.TrimPrefix(next.Name, basePath),
+			RelPath:  util.RelPathType(strings.TrimPrefix(next.Name, basePath)),
 			Md5:      hex.EncodeToString(next.MD5),
 			ModTime:  next.Updated,
-		})
+		}
+		ret[entry.RelPath] = entry
 	}
 	return ret, nil
 }
 
-func (g *GcpBackend) Delete(name string) error {
-	return g.bucket.Object(path.Join(g.basePrefix, name)).Delete(context.TODO())
+func (g *GcpBackend) Delete(name util.RelPathType) error {
+	return g.bucket.Object(path.Join(g.basePrefix, name.String())).Delete(context.TODO())
 }
 
-func (g *GcpBackend) GetMeta(name string) (*MetaEntry, error) {
-	attrs, err := g.bucket.Object(path.Join(g.basePrefix, name)).Attrs(context.TODO())
+func (g *GcpBackend) GetMeta(name util.RelPathType) (*MetaEntry, error) {
+	attrs, err := g.bucket.Object(path.Join(g.basePrefix, name.String())).Attrs(context.TODO())
 	if err != nil {
 		return nil, err
 	}
@@ -106,8 +107,8 @@ func (g *GcpBackend) GetMeta(name string) (*MetaEntry, error) {
 	}, nil
 }
 
-func (g *GcpBackend) Get(name string) (*FullEntry, error) {
-	o := g.bucket.Object(path.Join(g.basePrefix, name))
+func (g *GcpBackend) Get(name util.RelPathType) (*FullEntry, error) {
+	o := g.bucket.Object(path.Join(g.basePrefix, name.String()))
 	if attrs, err := o.Attrs(context.TODO()); err != nil {
 		return nil, err
 	} else if reader, err := o.NewReader(context.TODO()); err != nil {
@@ -125,8 +126,8 @@ func (g *GcpBackend) Get(name string) (*FullEntry, error) {
 	}
 }
 
-func (g *GcpBackend) Put(name string, reader io.ReadCloser) error {
-	o := g.bucket.Object(path.Join(g.basePrefix, name))
+func (g *GcpBackend) Put(name util.RelPathType, reader io.ReadCloser) error {
+	o := g.bucket.Object(path.Join(g.basePrefix, name.String()))
 	log.Printf("Writing to %v:%v", o.BucketName(), o.ObjectName())
 	w := o.NewWriter(context.TODO())
 	return util.CopyAndClose(w, reader)
