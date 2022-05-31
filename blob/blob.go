@@ -25,6 +25,7 @@ type MetaEntry struct {
 	Md5                string // hex string of md5
 	ModTime            time.Time
 	BlobWriterClientId *string
+	ACLs               []gcs.ACLRule
 }
 
 type FullEntry struct {
@@ -39,7 +40,9 @@ type Backend interface {
 	Delete(name util.RelPathType) error
 	Get(name util.RelPathType) (*FullEntry, error)
 	// Reader will be closed by Put
-	Put(name util.RelPathType, reader io.ReadCloser) error
+        // If acls is not empty, these acls will be used to write
+        // for the newly created / updated blob
+	Put(name util.RelPathType, reader io.ReadCloser, acls []gcs.ACLRule) error
 }
 
 type GcpBackend struct {
@@ -89,6 +92,7 @@ func (g *GcpBackend) ListDirRecursive(prefix string) (map[util.RelPathType]MetaE
 			RelPath:  util.RelPathType(strings.TrimPrefix(next.Name, basePath)),
 			Md5:      hex.EncodeToString(next.MD5),
 			ModTime:  next.Updated,
+			ACLs:     next.ACL,
 		}
 		writerClientId, ok := next.Metadata[writerClientIdKey]
 		if ok {
@@ -114,6 +118,7 @@ func (g *GcpBackend) GetMeta(name util.RelPathType) (*MetaEntry, error) {
 		RelPath:  name,
 		Md5:      hex.EncodeToString(attrs.MD5),
 		ModTime:  attrs.Updated,
+		ACLs:     attrs.ACL,
 	}
 	writerClientId, ok := attrs.Metadata[writerClientIdKey]
 	if ok {
@@ -141,14 +146,19 @@ func (g *GcpBackend) Get(name util.RelPathType) (*FullEntry, error) {
 	}
 }
 
-func (g *GcpBackend) Put(name util.RelPathType, reader io.ReadCloser) error {
+func (g *GcpBackend) Put(name util.RelPathType, reader io.ReadCloser, acls []gcs.ACLRule) error {
 	o := g.bucket.Object(path.Join(g.basePrefix, name.String()))
 	log.Printf("Writing to %v:%v", o.BucketName(), o.ObjectName())
-	w := o.NewWriter(context.TODO())
-	if w.ObjectAttrs.Metadata == nil {
+        w := o.NewWriter(context.TODO())
+	// Set client id attribute
+        if w.ObjectAttrs.Metadata == nil {
 		w.ObjectAttrs.Metadata = make(map[string]string)
 	}
 	w.ObjectAttrs.Metadata[writerClientIdKey] = g.clientId
+        // Set acls if present
+	if len(acls) != 0 {
+		w.ACL = acls
+	}
 	return util.CopyAndClose(w, reader)
 }
 

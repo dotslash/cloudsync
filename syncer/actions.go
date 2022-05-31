@@ -1,6 +1,7 @@
 package syncer
 
 import (
+	"cloud.google.com/go/storage"
 	"fmt"
 	"github.com/dotslash/cloudsync/blob"
 	"github.com/dotslash/cloudsync/util"
@@ -62,7 +63,12 @@ func (bw *blobWrite) do() error {
 	if err != nil {
 		return fmt.Errorf("[%v] remoteToWrite: Open(%v %v) failed - %e", ctxString, localFullPath, bw.relativePath, err)
 	}
-	if err = bw.backend.Put(bw.relativePath, file); err != nil {
+        // If the blob already exists, preserve existing acls
+	var acls []storage.ACLRule
+	if bw.remoteMeta != nil {
+		acls = bw.remoteMeta.ACLs
+	}
+	if err = bw.backend.Put(bw.relativePath, file, acls); err != nil {
 		return fmt.Errorf("[%v] remoteToWrite: Put(%v) failed - %e", ctxString, bw.relativePath, err)
 	}
 	return nil

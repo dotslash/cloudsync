@@ -219,10 +219,13 @@ func (s *syncer) diffFromLastRun(newRun *ScanResult) diffFromLastRunRes {
 			if newFile.Md5sum != _oldFile.Md5sum {
 				ret.setLocalDiff(newFile.RelPath, &newFile, changeTypeUpdated)
 			}
+			// Delete the file from newLocalFiles map. After this for loop
+			// the entries left in this map are newly added.
 			delete(newLocalFiles, newFile.RelPath)
 		}
 	}
 	for _, _newFile := range newLocalFiles {
+		// all these are newly added.
 		newFile := _newFile
 		ret.setLocalDiff(_newFile.RelPath, &newFile, changeTypeUpdated)
 	}

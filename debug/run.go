@@ -28,6 +28,11 @@ func main() {
 		debugBlob(os.Args[2:])
 	} else if os.Args[1] == "file" {
 		debugFile(os.Args[1:])
+	} else if os.Args[1] == "blob-get" {
+		u, _ := url.Parse(os.Args[2])
+		backend := blob.NewBackend(*u, "")
+		meta, _ := backend.GetMeta(util.RelPathType(os.Args[3]))
+		fmt.Println(meta)
 	} else {
 		id, err := util.GetUniqueMachineId()
 		fmt.Println("Error: ", err)
