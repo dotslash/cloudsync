@@ -16,11 +16,6 @@ type ScanResult struct {
 	scanTime time.Time
 }
 
-// TODO: Remove??
-func (s *ScanResult) isDefault() bool {
-	return s.scanTime == time.Time{}
-}
-
 type syncer struct {
 	localBasePath string
 	backend       blob.Backend
@@ -36,6 +31,7 @@ const (
 )
 
 type diffFileEntry struct {
+	fileName util.RelPathType
 	// if localChanged is false, no change on local
 	// if localChanged is true, localDiff has this semantic
 	//   nil => no diff.
@@ -61,15 +57,115 @@ func (de diffFileEntry) String() string {
 	return fmt.Sprintf("local:%v@%v remote:%v@%v", de.localChange, localMd5, de.remoteChange, remoteMd5)
 }
 
-type diffFromLastRunRes map[util.RelPathType]*diffFileEntry
+func (de *diffFileEntry) getAction(s *syncer) action {
+	bothMetasPresent := de.local != nil && de.remote != nil
+	noOp := bothMetasPresent && de.local.Md5sum == de.remote.Md5
+	if !noOp {
+		log.Printf("diffEntry - %v %v", de.fileName, de.String())
+	}
+	if de.localChange == changeTypeRem && de.remoteChange == changeTypeRem {
+		// Removed from both remote and local.
+		return nil
+	} else if de.remoteChange == changeTypeRem { // removed from remote
+		if de.localChange == changeTypeUpdated {
+			// locally the file is updated or added. It is removed from remote.
+			// lets play safe and add it back to remote.
+			return &blobWrite{
+				localBasePath: s.localBasePath,
+				relativePath:  de.fileName,
+				backend:       s.backend,
+			}
+		} else if de.local != nil {
+			// no change on local => remove on local
+			return &localRemove{
+				basePath:         s.localBasePath,
+				relativeFilePath: de.fileName,
+			}
+		}
+	} else if de.localChange == changeTypeRem { // removed from local
+		if de.remoteChange == changeTypeUpdated { // update on blobstore
+			blobWriterClientId := de.remote.BlobWriterClientId
+			if blobWriterClientId != nil && *blobWriterClientId == util.UniqueMachineId {
+				// 1. Source of the blob is the current machine
+				// 2. Blob is not on the machine
+				// => blob was removed from the machine after it was uploaded => So we need to remove the blob
+				return &blobRemove{
+					relativeFilePath: de.fileName,
+					backend:          s.backend,
+				}
+			} else {
+				// locally file is removed. But it updated on remote recently.
+				// lets play safe and add it back to local
+				return &localWrite{
+					localBasePath: s.localBasePath,
+					relativePath:  de.fileName,
+					backend:       s.backend,
+					blobInfo:      de.remote,
+				}
+			}
+		} else if de.remote != nil {
+			// no changes on remote => remove on remote
+			return &blobRemove{
+				relativeFilePath: de.fileName,
+				backend:          s.backend,
+			}
+		}
+		return nil
+	} else if !bothMetasPresent {
+		// This will happen if the file is present only on one side => (typically file add)
+		if de.local != nil {
+			return &blobWrite{
+				localBasePath: s.localBasePath,
+				relativePath:  de.fileName,
+				backend:       s.backend,
+				localMeta:     de.local,
+				remoteMeta:    de.remote,
+			}
+		} else {
+			return &localWrite{
+				localBasePath: s.localBasePath,
+				relativePath:  de.fileName,
+				backend:       s.backend,
+				blobInfo:      de.remote,
+			}
+		}
+	} else {
+		// We have both the metadatas. Lets check which one is recent and write to the other.
+		if de.local.Md5sum == de.remote.Md5 {
+			// file changed. But same md5 in both places.
+			return nil
+		} else if de.local.ModTime.After(de.remote.ModTime) {
+			// local timestamp higher => write to remote
+			return &blobWrite{
+				localBasePath: s.localBasePath,
+				relativePath:  de.fileName,
+				backend:       s.backend,
+				localMeta:     de.local,
+				remoteMeta:    de.remote,
+			}
+		} else {
+			// remote timestamp higher => write to local
+			return &localWrite{
+				localBasePath: s.localBasePath,
+				relativePath:  de.fileName,
+				backend:       s.backend,
+				blobInfo:      de.remote,
+			}
+		}
+	}
+	return nil
+}
 
-func (d *diffFromLastRunRes) setLocalDiff(key util.RelPathType, local *util.LocalFileMeta, ct changeType) {
+type diffFromLastRunState map[util.RelPathType]*diffFileEntry
+
+func (d *diffFromLastRunState) setLocalDiff(key util.RelPathType, local *util.LocalFileMeta, ct changeType) {
 	entry, ok := (*d)[key]
 	if ok {
 		entry.localChange = ct
 		entry.local = local
 	} else {
 		(*d)[key] = &diffFileEntry{
+			fileName:     key,
 			local:        local,
 			localChange:  ct,
 			remoteChange: changeTypeNone,
@@ -77,13 +173,14 @@ func (d *diffFromLastRunRes) setLocalDiff(key util.RelPathType, local *util.Loca
 	}
 }
 
-func (d *diffFromLastRunRes) setRemoteDiff(key util.RelPathType, remote *blob.MetaEntry, ct changeType) {
+func (d *diffFromLastRunState) setRemoteDiff(key util.RelPathType, remote *blob.MetaEntry, ct changeType) {
 	entry, ok := (*d)[key]
 	if ok {
 		entry.remote = remote
 		entry.remoteChange = ct
 	} else {
 		(*d)[key] = &diffFileEntry{
+			fileName:     key,
 			remote:       remote,
 			remoteChange: ct,
 			localChange:  changeTypeNone,
@@ -103,121 +200,20 @@ func (s *syncer) Start() {
 }
 
 func (s *syncer) getActions(newRun *ScanResult) []action {
-	diff := s.diffFromLastRun(newRun)
-	ret := make([]action, 0)
-	for fn, diffEntry := range diff {
-		log.Printf("diffEntry - %v %v", fn, diffEntry.String())
-		bothMetasPresent := diffEntry.local != nil && diffEntry.remote != nil
-		if diffEntry.localChange == changeTypeRem && diffEntry.remoteChange == changeTypeRem {
-			// Removed from both remote and local.
-			continue
-		} else if diffEntry.remoteChange == changeTypeRem { // removed from remote
-			if diffEntry.localChange == changeTypeUpdated {
-				// locally the file is updated or added. It is removed from remote.
-				// lets play safe and add it back to remote.
-				ret = append(ret, &blobWrite{
-					localBasePath: s.localBasePath,
-					relativePath:  fn,
-					backend:       s.backend,
-				})
-			} else if diffEntry.local != nil {
-				// no change on local => remove on local
-				ret = append(ret, &localRemove{
-					basePath:         s.localBasePath,
-					relativeFilePath: fn,
-				})
-			}
-		} else if diffEntry.localChange == changeTypeRem { // removed from local
-			if diffEntry.remoteChange == changeTypeUpdated { // update on blobstore
-				blobWriterClientId := diffEntry.remote.BlobWriterClientId
-				if blobWriterClientId != nil && *blobWriterClientId == util.UniqueMachineId {
-					// 1. Source of the blob is the current machine
-					// 2. Blob is not on the machine
-					// => blob was removed from the machine after it was uploaded => So we need to remove the blob
-					ret = append(ret, &blobRemove{
-						relativeFilePath: fn,
-						backend:          s.backend,
-					})
-				} else {
-					// locally file is removed. But it updated on remote recently.
-					// lets play safe and add it back to local
-					ret = append(ret, &localWrite{
-						localBasePath: s.localBasePath,
-						relativePath:  fn,
-						backend:       s.backend,
-						blobInfo:      diffEntry.remote,
-					})
-				}
-			} else if diffEntry.remote != nil {
-				// no changes on remote => remove on remote
-				ret = append(ret, &blobRemove{
-					relativeFilePath: fn,
-					backend:          s.backend,
-				})
-			}
-		} else if !bothMetasPresent {
-			// This will happen if the file is present only on one side => (typically file add)
-			if diffEntry.local != nil {
-				ret = append(ret, &blobWrite{
-					localBasePath: s.localBasePath,
-					relativePath:  fn,
-					backend:       s.backend,
-					localMeta:     diffEntry.local,
-					remoteMeta:    diffEntry.remote,
-				})
-			} else {
-				ret = append(ret, &localWrite{
-					localBasePath: s.localBasePath,
-					relativePath:  fn,
-					backend:       s.backend,
-					blobInfo:      diffEntry.remote,
-				})
-			}
-		} else if diffEntry.localChange == changeTypeUpdated || diffEntry.remoteChange == changeTypeUpdated {
-			// change on both remote and local and both metadata entries present
-			if diffEntry.local.Md5sum == diffEntry.remote.Md5 {
-				// file changed. But same md5 in both places.
-				continue
-			} else if diffEntry.local.ModTime.After(diffEntry.remote.ModTime) {
-				// local timestamp higher => write to remote
-				ret = append(ret, &blobWrite{
-					localBasePath: s.localBasePath,
-					relativePath:  fn,
-					backend:       s.backend,
-					localMeta:     diffEntry.local,
-					remoteMeta:    diffEntry.remote,
-				})
-			} else {
-				// remote timestamp higher => write to local
-				ret = append(ret, &localWrite{
-					localBasePath: s.localBasePath,
-					relativePath:  fn,
-					backend:       s.backend,
-					blobInfo:      diffEntry.remote,
-				})
-			}
-		} else {
-			log.Printf("getActions: This should not happen %v %v", fn, diffEntry.String())
-		}
-	}
-	return ret
-}
-
-func (s *syncer) diffFromLastRun(newRun *ScanResult) diffFromLastRunRes {
-	ret := make(diffFromLastRunRes)
+	state := make(diffFromLastRunState)
 	newLocalFiles := make(map[util.RelPathType]util.LocalFileMeta)
 	for _, _lm := range newRun.local {
 		localMeta := _lm
 		newLocalFiles[_lm.RelPath] = _lm
-		ret.setLocalDiff(localMeta.RelPath, &localMeta, changeTypeNone)
+		state.setLocalDiff(localMeta.RelPath, &localMeta, changeTypeNone)
 	}
 	for _, _oldFile := range s.lastScan.local {
 		newFile, ok := newLocalFiles[_oldFile.RelPath]
 		if !ok {
-			ret.setLocalDiff(_oldFile.RelPath, nil, changeTypeRem)
+			state.setLocalDiff(_oldFile.RelPath, nil, changeTypeRem)
 		} else {
 			if newFile.Md5sum != _oldFile.Md5sum {
-				ret.setLocalDiff(newFile.RelPath, &newFile, changeTypeUpdated)
+				state.setLocalDiff(newFile.RelPath, &newFile, changeTypeUpdated)
 			}
 			// Delete the file from newLocalFiles map. After this for loop
 			// the entries left in this map are newly added.
@@ -227,34 +223,36 @@ func (s *syncer) diffFromLastRun(newRun *ScanResult) diffFromLastRunRes {
 	for _, _newFile := range newLocalFiles {
 		// all these are newly added.
 		newFile := _newFile
-		ret.setLocalDiff(_newFile.RelPath, &newFile, changeTypeUpdated)
+		state.setLocalDiff(_newFile.RelPath, &newFile, changeTypeUpdated)
 	}
 
 	newFilesRemote := make(map[util.RelPathType]blob.MetaEntry)
 	for _, _remoteFile := range newRun.remote {
 		remoteFile := _remoteFile
 		newFilesRemote[_remoteFile.RelPath] = _remoteFile
-		ret.setRemoteDiff(_remoteFile.RelPath, &remoteFile, changeTypeNone)
+		state.setRemoteDiff(_remoteFile.RelPath, &remoteFile, changeTypeNone)
 	}
 	for _, _oldRemoteFile := range s.lastScan.remote {
 		newRemoteFile, ok := newFilesRemote[_oldRemoteFile.RelPath]
 		if !ok {
-			ret.setRemoteDiff(_oldRemoteFile.RelPath, nil, changeTypeRem)
+			state.setRemoteDiff(_oldRemoteFile.RelPath, nil, changeTypeRem)
 		} else {
 			if newRemoteFile.Md5 != _oldRemoteFile.Md5 {
-				ret.setRemoteDiff(newRemoteFile.RelPath, &newRemoteFile, changeTypeUpdated)
+				state.setRemoteDiff(newRemoteFile.RelPath, &newRemoteFile, changeTypeUpdated)
 			}
 			delete(newFilesRemote, newRemoteFile.RelPath)
 		}
 	}
 	for _, _newRemoteFile := range newFilesRemote {
 		newRemoteFile := _newRemoteFile
-		ret.setRemoteDiff(_newRemoteFile.RelPath, &newRemoteFile, changeTypeUpdated)
+		state.setRemoteDiff(_newRemoteFile.RelPath, &newRemoteFile, changeTypeUpdated)
 	}
 
-	for rp, entry := range ret {
-		if entry.localChange == changeTypeNone && entry.remoteChange == changeTypeNone {
-			delete(ret, rp)
+	ret := make([]action, 0)
+	for _, entry := range state {
+		fileAction := entry.getAction(s)
+		if fileAction != nil {
+			ret = append(ret, fileAction)
 		}
 	}
 
